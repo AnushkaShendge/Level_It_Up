@@ -915,8 +915,7 @@ def init_routes(app):
                 {"id": "dept-1", "name": "Marketing", "color": "bg-pink-500", "icon": "Target", "description": "Responsible for brand management, advertising, and market research", "headCount": 12, "budget": 750000, "location": "Floor 3, West Wing"},
                 {"id": "dept-2", "name": "Technology", "color": "bg-blue-500", "icon": "Zap", "description": "Handles software development, IT infrastructure, and technical support", "headCount": 24, "budget": 1200000, "location": "Floor 4, North Wing"},
                 {"id": "dept-3", "name": "Operations", "color": "bg-amber-500", "icon": "Settings", "description": "Manages day-to-day business activities and logistics", "headCount": 18, "budget": 900000, "location": "Floor 2, East Wing"},
-                {"id": "dept-4", "name": "Finance", "color": "bg-green-500", "icon": "BarChart2", "description": "Oversees financial planning, accounting, and budget management", "headCount": 10, "budget": 650000,
-                                 "location": "Floor 1, South Wing"
+                {"id": "dept-4", "name": "Finance", "color": "bg-green-500", "icon": "BarChart2", "description": "Oversees financial planning, accounting, and budget management", "headCount": 10, "budget": 650000,"location": "Floor 1, South Wing"}
             ]
             departments_collection.insert_many(sample_departments)
             logger.info("Departments collection seeded successfully")
