@@ -42,9 +42,9 @@ CORS(app)  # Enable CORS for all routes
 llm = ChatOpenAI()
 prompt = hub.pull("hwchase17/openai-functions-agent")
 
-# Initialize Gemini
-gemini = ChatGoogleGenerativeAI(
-    model="gemini-pro",
+# Initialize openai
+openai = ChatGoogleGenerativeAI(
+    model="openai-pro",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -172,7 +172,7 @@ def save_to_csv(task_data):
         raise
 
 def extract_task_info(email_body):
-    """Extract task information from email body using Gemini"""
+    """Extract task information from email body using openai"""
     try:
         context = get_current_context()
         extraction_input = extraction_prompt.format(
@@ -181,7 +181,7 @@ def extract_task_info(email_body):
             current_day=context['current_day'],
             current_time=context['current_time']
         )
-        response = gemini.invoke(extraction_input)
+        response = openai.invoke(extraction_input)
         extracted_data = output_parser.parse(response.content)
         logger.info(f"Successfully extracted task info: {extracted_data['name']}")
         return extracted_data
@@ -190,7 +190,7 @@ def extract_task_info(email_body):
         raise
 
 def generate_ai_insights(df):
-    """Generate comprehensive AI insights using Gemini"""
+    """Generate comprehensive AI insights using openai"""
     try:
         # Prepare data for analysis
         total_tasks = len(df)
@@ -244,7 +244,7 @@ def generate_ai_insights(df):
         Format the response in HTML with proper headers and bullet points.
         """
         
-        response = gemini.invoke(analysis_prompt)
+        response = openai.invoke(analysis_prompt)
         return response.content
     except Exception as e:
         logger.error(f"Error generating AI insights: {e}")

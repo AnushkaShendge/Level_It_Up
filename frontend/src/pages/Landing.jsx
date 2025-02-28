@@ -42,8 +42,8 @@ const LandingPage = () => {
     });
   };
 
-  // Gemini-like Background Shapes
-  const GeminiBackground = () => {
+  // openai-like Background Shapes
+  const openaiBackground = () => {
     const generateFluidShapes = () => {
       return Array(6).fill().map((_, index) => ({
         id: index,

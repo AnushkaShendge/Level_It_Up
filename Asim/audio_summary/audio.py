@@ -86,7 +86,7 @@ emotion_analyzer = pipeline("text-classification", model="j-hartmann/emotion-eng
 key_phrase_model = KeyBERT()
 vader_analyzer = SentimentIntensityAnalyzer()
 
-# Initialize Gemini API
+# Initialize openai API
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 if not GOOGLE_API_KEY:
     logger.error("GOOGLE_API_KEY not found in environment variables")
@@ -94,10 +94,10 @@ if not GOOGLE_API_KEY:
 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    llm = GoogleGenerativeAI(model="gemini-pro", google_api_key=GOOGLE_API_KEY)
-    logger.info("Successfully configured Gemini API")
+    llm = GoogleGenerativeAI(model="openai-pro", google_api_key=GOOGLE_API_KEY)
+    logger.info("Successfully configured openai API")
 except Exception as e:
-    logger.error(f"Failed to configure Gemini API: {str(e)}")
+    logger.error(f"Failed to configure openai API: {str(e)}")
     raise
 
 
@@ -220,7 +220,7 @@ def transcribe_audio(audio_path):
         return None
 
 def generate_meeting_summary(transcript):
-    """Generate meeting summary using Gemini"""
+    """Generate meeting summary using openai"""
     try:
         summary_prompt = f"""
         Based on this meeting transcript, provide a structured analysis in the following format:
@@ -244,7 +244,7 @@ def generate_meeting_summary(transcript):
         raise
 
 def generate_meeting_minutes(transcript, meeting_details):
-    """Generate formal meeting minutes using Gemini with meeting details"""
+    """Generate formal meeting minutes using openai with meeting details"""
     try:
         # Format meeting details
         start_time = datetime.strptime(meeting_details.get('start_time', ''), "%Y-%m-%dT%H:%M:%SZ")
