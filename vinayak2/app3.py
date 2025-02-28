@@ -13,11 +13,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 # Set API keys
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")  # Google Gemini API key
+os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")  # Google openai API key
 os.environ["COMPOSIO_API_KEY"] = os.getenv("COMPOSIO_API_KEY")  # Composio API key
 
-# Initialize Gemini LLM
-llm = ChatGoogleGenerativeAI(model="gemini-pro")
+# Initialize openai LLM
+llm = ChatGoogleGenerativeAI(model="openai-pro")
 
 # Initialize Composio Toolset
 composio_toolset = ComposioToolSet()
@@ -49,9 +49,9 @@ def handle_gmail_message(event: TriggerEventData):
     # Print email details to CLI
     logging.info(f"New Email Received:\nFrom: {sender}\nSubject: {subject}\nBody: {body}")
 
-    # Use Gemini to generate a response (optional)
+    # Use openai to generate a response (optional)
     response = llm.invoke(f"Summarize this email: {body}")
-    logging.info(f"Gemini Summary: {response}")
+    logging.info(f"openai Summary: {response}")
 
     # Example: Use Composio to send an email notification
     try:

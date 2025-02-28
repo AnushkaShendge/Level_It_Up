@@ -23,7 +23,7 @@ class GmailMonitor:
     def __init__(self):
         # MongoDB setup
         self.client = MongoClient(MONGODB_URI)
-        self.db = self.client['email_db']
+        self.db = self.client['email_d2sb']
         self.emails = self.db['emails']
         self.metadata = self.db['metadata']
         

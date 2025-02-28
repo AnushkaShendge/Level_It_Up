@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langchain.agents import AgentType, initialize_agent
-from langchain_groq import ChatGroq
+from langchain_openai import Chatopenai
 from composio_langchain import ComposioToolSet
 import os
 from dotenv import load_dotenv
@@ -13,11 +13,11 @@ CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 load_dotenv()
 
 # Check if environment variables are set
-if not os.getenv("GROQ_API_KEY") or not os.getenv("COMPOSIO_API_KEY"):
-    raise ValueError("Please set GROQ_API_KEY and COMPOSIO_API_KEY in your environment or .env file")
+if not os.getenv("openai_API_KEY") or not os.getenv("COMPOSIO_API_KEY"):
+    raise ValueError("Please set openai_API_KEY and COMPOSIO_API_KEY in your environment or .env file")
 
 # Initialize the LLM
-llm = ChatGroq(model="llama-3.3-70b-versatile")
+llm = Chatopenai(model="llama-3.3-70b-versatile")
 
 # Get Composio tools
 composio_toolset = ComposioToolSet()
