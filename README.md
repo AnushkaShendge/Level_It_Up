@@ -1,6 +1,6 @@
 # AI-Powered Management & Business Automation Suite
 
-![AI Management Banner](https://yourimageurl.com/banner.png)
+
 
 ## 🚀 The Ultimate AI Business Automation Tool
 
