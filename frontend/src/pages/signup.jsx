@@ -11,13 +11,13 @@ const Signup = () => {
   const navigate = useNavigate();
   async function handleSignup(e){
     e.preventDefault();
-    // const res = await axios.post("http://localhost:4000/auth/register", {
-    //   name ,  email , password, 
-    // })
-    // if(res.data){
-    //   navigate('/login');
-    // }
-    navigate('/login');
+    const res = await axios.post("http://localhost:4000/auth/register", {
+      name ,  email , password, 
+    })
+    if(res.data){
+      navigate('/login');
+    }
+    //navigate('/login');
   }
   return (
     <div className="flex min-h-screen bg-black text-white relative overflow-hidden">

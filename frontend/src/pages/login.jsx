@@ -12,14 +12,14 @@ const Login = () => {
   const navigate = useNavigate();
   async function handleLogin(e){
     e.preventDefault();
-    // const res = await axios.post("http://localhost:4000/auth/login", {
-    //     email , password
-    // })
-    // if(res.data){
-    //   login(res.data);
-    //   navigate('/home');
-    // }
-    navigate('/dashboard');
+    const res = await axios.post("http://localhost:4000/auth/login", {
+        email , password
+    })
+    if(res.data){
+      login(res.data);
+      navigate('/home');
+    }
+    //navigate('/dashboard');
   }
   return (
     <div className="flex min-h-screen bg-black text-white relative overflow-hidden">
