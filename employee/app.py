@@ -916,3 +916,408 @@ def init_routes(app):
                 {"id": "dept-2", "name": "Technology", "color": "bg-blue-500", "icon": "Zap", "description": "Handles software development, IT infrastructure, and technical support", "headCount": 24, "budget": 1200000, "location": "Floor 4, North Wing"},
                 {"id": "dept-3", "name": "Operations", "color": "bg-amber-500", "icon": "Settings", "description": "Manages day-to-day business activities and logistics", "headCount": 18, "budget": 900000, "location": "Floor 2, East Wing"},
                 {"id": "dept-4", "name": "Finance", "color": "bg-green-500", "icon": "BarChart2", "description": "Oversees financial planning, accounting, and budget management", "headCount": 10, "budget": 650000,
+                                 "location": "Floor 1, South Wing"
+            ]
+            departments_collection.insert_many(sample_departments)
+            logger.info("Departments collection seeded successfully")
+
+        # Check if employees already exist
+        if employees_collection.count_documents({}) > 0:
+            logger.info("Employees collection already populated, skipping seed for employees")
+        else:
+            logger.info("Seeding employees collection")
+            sample_employees = [
+                {
+                    "id": "emp-1",
+                    "name": "John Doe",
+                    "department": "dept-1",
+                    "role": "Marketing Manager",
+                    "email": "john.doe@example.com",
+                    "phone": "+1-555-1234",
+                    "skills": ["Campaign Management", "Content Strategy", "SEO"],
+                    "performance": 85,
+                    "joinDate": "2018-06-15",
+                    "manager": None,
+                    "availableSlots": ["09:00", "14:00", "16:00"]
+                },
+                {
+                    "id": "emp-2",
+                    "name": "Jane Smith",
+                    "department": "dept-2",
+                    "role": "Senior Software Engineer",
+                    "email": "jane.smith@example.com",
+                    "phone": "+1-555-5678",
+                    "skills": ["Python", "JavaScript", "Cloud Architecture"],
+                    "performance": 92,
+                    "joinDate": "2019-03-10",
+                    "manager": None,
+                    "availableSlots": ["10:00", "15:00"]
+                },
+                {
+                    "id": "emp-3",
+                    "name": "Alice Johnson",
+                    "department": "dept-3",
+                    "role": "Operations Director",
+                    "email": "alice.johnson@example.com",
+                    "phone": "+1-555-9101",
+                    "skills": ["Process Optimization", "Logistics", "Project Management"],
+                    "performance": 88,
+                    "joinDate": "2017-11-22",
+                    "manager": None,
+                    "availableSlots": ["11:00", "13:00", "17:00"]
+                }
+            ]
+            employees_collection.insert_many(sample_employees)
+            logger.info("Employees collection seeded successfully")
+
+        # Check if tasks already exist
+        if tasks_collection.count_documents({}) > 0:
+            logger.info("Tasks collection already populated, skipping seed for tasks")
+        else:
+            logger.info("Seeding tasks collection")
+            sample_tasks = [
+                {
+                    "id": "task-1",
+                    "title": "Launch Q4 Marketing Campaign",
+                    "description": "Plan and execute the Q4 marketing campaign",
+                    "department": "dept-1",
+                    "assignedTo": "emp-1",
+                    "priority": "high",
+                    "status": "in progress",
+                    "startDate": "2023-10-01",
+                    "dueDate": "2023-12-15"
+                },
+                {
+                    "id": "task-2",
+                    "title": "Develop New API Endpoints",
+                    "description": "Create new API endpoints for the mobile app",
+                    "department": "dept-2",
+                    "assignedTo": "emp-2",
+                    "priority": "medium",
+                    "status": "not started",
+                    "startDate": "2023-11-01",
+                    "dueDate": "2023-12-01"
+                },
+                {
+                    "id": "task-3",
+                    "title": "Optimize Supply Chain Process",
+                    "description": "Review and optimize the supply chain process",
+                    "department": "dept-3",
+                    "assignedTo": "emp-3",
+                    "priority": "high",
+                    "status": "completed",
+                    "startDate": "2023-09-01",
+                    "dueDate": "2023-10-15",
+                    "completionDate": "2023-10-10"
+                }
+            ]
+            tasks_collection.insert_many(sample_tasks)
+            logger.info("Tasks collection seeded successfully")
+
+        return jsonify({"message": "Database seeding completed successfully"}), 200
+
+    # Get all employees
+    @app.route("/api/employees", methods=["GET"])
+    @log_api_call
+    def get_all_employees():
+        """
+        Get a list of all employees with enriched data.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        employees = list(employees_collection.find({}))
+        enriched_employees = [enrich_employee_data(serialize_document(emp)) for emp in employees]
+        return jsonify(enriched_employees), 200
+
+    # Get employee by ID
+    @app.route("/api/employees/<employee_id>", methods=["GET"])
+    @log_api_call
+    def get_employee_by_id(employee_id):
+        """
+        Get detailed information about a specific employee.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        employee = get_employee(employee_id)
+        if not employee:
+            return jsonify({"error": "Employee not found"}), 404
+            
+        enriched_employee = enrich_employee_data(employee)
+        return jsonify(enriched_employee), 200
+
+    # Create a new employee
+    @app.route("/api/employees", methods=["POST"])
+    @validate_request_data(["name", "department", "role", "email"])
+    @log_api_call
+    def create_employee():
+        """
+        Create a new employee record.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        data = request.json
+        employee_id = generate_unique_id("emp")
+        
+        new_employee = {
+            "id": employee_id,
+            "name": data["name"],
+            "department": data["department"],
+            "role": data["role"],
+            "email": data["email"],
+            "phone": data.get("phone", ""),
+            "skills": data.get("skills", []),
+            "performance": data.get("performance", 0),
+            "joinDate": datetime.datetime.now().isoformat(),
+            "manager": data.get("manager", None),
+            "availableSlots": data.get("availableSlots", [])
+        }
+        
+        employees_collection.insert_one(new_employee)
+        logger.info(f"Created new employee: {employee_id}")
+        
+        return jsonify({"id": employee_id, "message": "Employee created successfully"}), 201
+
+    # Update employee details
+    @app.route("/api/employees/<employee_id>", methods=["PUT"])
+    @validate_request_data(["name", "department", "role", "email"])
+    @log_api_call
+    def update_employee(employee_id):
+        """
+        Update an existing employee's details.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        data = request.json
+        update_result = employees_collection.update_one(
+            {"id": employee_id},
+            {"$set": {
+                "name": data["name"],
+                "department": data["department"],
+                "role": data["role"],
+                "email": data["email"],
+                "phone": data.get("phone", ""),
+                "skills": data.get("skills", []),
+                "performance": data.get("performance", 0),
+                "manager": data.get("manager", None),
+                "availableSlots": data.get("availableSlots", [])
+            }}
+        )
+        
+        if update_result.matched_count == 0:
+            return jsonify({"error": "Employee not found"}), 404
+            
+        logger.info(f"Updated employee: {employee_id}")
+        return jsonify({"message": "Employee updated successfully"}), 200
+
+    # Delete an employee
+    @app.route("/api/employees/<employee_id>", methods=["DELETE"])
+    @log_api_call
+    def delete_employee(employee_id):
+        """
+        Delete an employee record.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        delete_result = employees_collection.delete_one({"id": employee_id})
+        if delete_result.deleted_count == 0:
+            return jsonify({"error": "Employee not found"}), 404
+            
+        logger.info(f"Deleted employee: {employee_id}")
+        return jsonify({"message": "Employee deleted successfully"}), 200
+
+    # Get all departments
+    @app.route("/api/departments", methods=["GET"])
+    @log_api_call
+    def get_all_departments():
+        """
+        Get a list of all departments.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        departments = list(departments_collection.find({}))
+        return jsonify([serialize_document(dept) for dept in departments]), 200
+
+    # Get department by ID
+    @app.route("/api/departments/<department_id>", methods=["GET"])
+    @log_api_call
+    def get_department_by_id(department_id):
+        """
+        Get detailed information about a specific department.
+        
+        Args:
+            department_id (str): Department ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        department = get_department(department_id)
+        if not department:
+            return jsonify({"error": "Department not found"}), 404
+            
+        return jsonify(department), 200
+
+    # Create a new department
+    @app.route("/api/departments", methods=["POST"])
+    @validate_request_data(["name", "description"])
+    @log_api_call
+    def create_department():
+        """
+        Create a new department record.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        data = request.json
+        department_id = generate_unique_id("dept")
+        
+        new_department = {
+            "id": department_id,
+            "name": data["name"],
+            "description": data["description"],
+            "color": data.get("color", "bg-gray-500"),
+            "icon": data.get("icon", "Folder"),
+            "headCount": data.get("headCount", 0),
+            "budget": data.get("budget", 0),
+            "location": data.get("location", "")
+        }
+        
+        departments_collection.insert_one(new_department)
+        logger.info(f"Created new department: {department_id}")
+        
+        return jsonify({"id": department_id, "message": "Department created successfully"}), 201
+
+    # Update department details
+    @app.route("/api/departments/<department_id>", methods=["PUT"])
+    @validate_request_data(["name", "description"])
+    @log_api_call
+    def update_department(department_id):
+        """
+        Update an existing department's details.
+        
+        Args:
+            department_id (str): Department ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        data = request.json
+        update_result = departments_collection.update_one(
+            {"id": department_id},
+            {"$set": {
+                "name": data["name"],
+                "description": data["description"],
+                "color": data.get("color", "bg-gray-500"),
+                "icon": data.get("icon", "Folder"),
+                "headCount": data.get("headCount", 0),
+                "budget": data.get("budget", 0),
+                "location": data.get("location", "")
+            }}
+        )
+        
+        if update_result.matched_count == 0:
+            return jsonify({"error": "Department not found"}), 404
+            
+        logger.info(f"Updated department: {department_id}")
+        return jsonify({"message": "Department updated successfully"}), 200
+
+    # Delete a department
+    @app.route("/api/departments/<department_id>", methods=["DELETE"])
+    @log_api_call
+    def delete_department(department_id):
+        """
+        Delete a department record.
+        
+        Args:
+            department_id (str): Department ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        delete_result = departments_collection.delete_one({"id": department_id})
+        if delete_result.deleted_count == 0:
+            return jsonify({"error": "Department not found"}), 404
+            
+        logger.info(f"Deleted department: {department_id}")
+        return jsonify({"message": "Department deleted successfully"}), 200
+
+    # Get all tasks
+    @app.route("/api/tasks", methods=["GET"])
+    @log_api_call
+    def get_all_tasks():
+        """
+        Get a list of all tasks.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        tasks = list(tasks_collection.find({}))
+        return jsonify([serialize_document(task) for task in tasks]), 200
+
+    # Get task by ID
+    @app.route("/api/tasks/<task_id>", methods=["GET"])
+    @log_api_call
+    def get_task_by_id(task_id):
+        """
+        Get detailed information about a specific task.
+        
+        Args:
+            task_id (str): Task ID
+            
+        Returns:
+            tuple: JSON response and status code
+        """
+        task = tasks_collection.find_one({"id": task_id})
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+            
+        return jsonify(serialize_document(task)), 200
+
+    # Create a new task
+    @app.route("/api/tasks", methods=["POST"])
+    @validate_request_data(["title", "description", "department", "assignedTo", "priority"])
+    @log_api_call
+    def create_task():
+        """
+        Create a new task record.
+        
+        Returns:
+            tuple: JSON response and status code
+        """
+        data = request.json
+        task_id = generate_unique_id("task")
+        
+        new_task = {
+            "id": task_id,
+            "title": data["title"],
+            "description": data["description"],
+            "department": data["department"],
+            "assignedTo": data["assignedTo"],
+            "priority": data["priority"],
+            "status": "not started",
+            "startDate": data.get("startDate", datetime.datetime.now().isoformat()),
+            "dueDate": data.get("dueDate", ""),
+            "completionDate": None
+        }
+        
+        tasks_collection.insert_one(new_task)
+        logger.info(f"Created new task: {task_id}")
+        
+        return jsonify({"id": task_id, "message": "Task created successfully"}), 201
+
+    # Update task details
+    
