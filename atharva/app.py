@@ -24,7 +24,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # Initialize the language identification model
-language_id = None
+language_id = 'en'
 
 def load_model():
     global language_id
