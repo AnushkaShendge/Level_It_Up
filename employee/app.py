@@ -1,258 +1,918 @@
-from flask import jsonify, request
+from flask import jsonify, request, Response, abort, make_response, current_app, g
 from models import (
     employees_collection, departments_collection, tasks_collection, 
     meetings_collection, notifications_collection, chat_messages_collection, 
-    serialize_document
+    serialize_document, performance_metrics_collection, feedback_collection,
+    projects_collection, timesheet_collection, expenses_collection,
+    training_collection, equipment_collection, documents_collection
 )
 from openai import OpenAI
 from bson.objectid import ObjectId
 import datetime
 import random
+import time
+import json
+import logging
+import uuid
+import hashlib
+import base64
+import re
+import os
+import sys
+import math
+import statistics
+import calendar
+import pytz
+from typing import List, Dict, Any, Optional, Union, Tuple
+from functools import wraps
+from dateutil.relativedelta import relativedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import smtplib
+import threading
+import queue
+import requests
+
+# Set up logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("app_routes.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Global variables for caching
+CACHE = {}
+CACHE_TIMEOUT = 300  # 5 minutes
+LAST_CACHE_CLEANUP = time.time()
 
 def init_routes(app):
-    # OpenAI Client
-    openai_client = OpenAI(api_key=app.config["OPENAI_API_KEY"])
+    """
+    Initialize all routes for the application.
+    This function sets up all API endpoints, helper functions,
+    middleware, and other route-related functionality.
+    
+    Args:
+        app (Flask): The Flask application instance to configure routes for.
+        
+    Returns:
+        None
+    
+    Note:
+        This is a comprehensive initialization that covers all aspects
+        of the application's API surface.
+    """
+    # Initialize performance monitoring
+    init_performance_monitoring(app)
+    
+    # OpenAI Client initialization with error handling and retries
+    openai_api_key = app.config.get("OPENAI_API_KEY")
+    if not openai_api_key:
+        logger.critical("OpenAI API key not found in configuration!")
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_api_key:
+            logger.critical("OpenAI API key not found in environment variables!")
+            raise ValueError("OpenAI API key must be provided")
+    
+    try:
+        openai_client = OpenAI(
+            api_key=openai_api_key,
+            timeout=30.0,
+            max_retries=3
+        )
+        logger.info("OpenAI client initialized successfully")
+    except Exception as e:
+        logger.critical(f"Failed to initialize OpenAI client: {str(e)}")
+        raise
 
-    # Helper function to get employee by ID
+    # Register middleware for request processing
+    register_middleware(app)
+    
+    # Configure CORS settings
+    configure_cors(app)
+    
+    # Setup error handlers
+    setup_error_handlers(app)
+    
+    # ======================================================================
+    # Helper Functions Section
+    # ======================================================================
+    
+    def get_cache_key(prefix, *args):
+        """
+        Generate a cache key based on prefix and arguments.
+        
+        Args:
+            prefix (str): Prefix for the cache key
+            *args: Variable arguments to include in the key
+            
+        Returns:
+            str: Generated cache key
+        """
+        key_parts = [prefix] + [str(arg) for arg in args]
+        return "_".join(key_parts)
+    
+    def set_cache(key, value, timeout=CACHE_TIMEOUT):
+        """
+        Set a value in the cache with expiration.
+        
+        Args:
+            key (str): Cache key
+            value (Any): Value to cache
+            timeout (int): Cache timeout in seconds
+            
+        Returns:
+            None
+        """
+        CACHE[key] = {
+            "value": value,
+            "expires": time.time() + timeout
+        }
+    
+    def get_cache(key):
+        """
+        Get a value from the cache if it exists and hasn't expired.
+        
+        Args:
+            key (str): Cache key
+            
+        Returns:
+            Any: Cached value or None if not found/expired
+        """
+        global LAST_CACHE_CLEANUP
+        
+        # Periodically clean up expired cache entries
+        if time.time() - LAST_CACHE_CLEANUP > 60:  # Clean up every minute
+            cleanup_cache()
+            LAST_CACHE_CLEANUP = time.time()
+            
+        if key in CACHE and CACHE[key]["expires"] > time.time():
+            return CACHE[key]["value"]
+        return None
+    
+    def cleanup_cache():
+        """
+        Remove expired items from the cache.
+        
+        Returns:
+            int: Number of items removed
+        """
+        current_time = time.time()
+        expired_keys = [k for k, v in CACHE.items() if v["expires"] <= current_time]
+        for key in expired_keys:
+            del CACHE[key]
+        return len(expired_keys)
+    
+    def requires_auth(f):
+        """
+        Decorator for routes that require authentication.
+        
+        Args:
+            f (function): The function to decorate
+            
+        Returns:
+            function: Decorated function
+        """
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            auth_header = request.headers.get("Authorization")
+            if not auth_header:
+                return jsonify({"error": "Authorization header is missing"}), 401
+            
+            try:
+                # This is just a placeholder - in a real app, you'd verify the token
+                token = auth_header.split(" ")[1]
+                # Validate token logic would go here
+                g.user_id = "user-123"  # Set user ID for the request
+            except Exception as e:
+                logger.error(f"Authentication error: {str(e)}")
+                return jsonify({"error": "Invalid authentication token"}), 401
+                
+            return f(*args, **kwargs)
+        return decorated
+    
+    def validate_request_data(required_fields):
+        """
+        Decorator to validate request data.
+        
+        Args:
+            required_fields (List[str]): List of required fields
+            
+        Returns:
+            function: Decorator function
+        """
+        def decorator(f):
+            @wraps(f)
+            def decorated(*args, **kwargs):
+                data = request.json
+                if not data:
+                    return jsonify({"error": "Request body is required"}), 400
+                
+                missing_fields = [field for field in required_fields if field not in data]
+                if missing_fields:
+                    return jsonify({
+                        "error": "Missing required fields",
+                        "fields": missing_fields
+                    }), 400
+                    
+                return f(*args, **kwargs)
+            return decorated
+        return decorator
+    
+    def log_api_call(f):
+        """
+        Decorator to log API calls.
+        
+        Args:
+            f (function): The function to decorate
+            
+        Returns:
+            function: Decorated function
+        """
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            start_time = time.time()
+            response = f(*args, **kwargs)
+            end_time = time.time()
+            
+            logger.info(f"API call to {request.path} from {request.remote_addr} "
+                      f"took {(end_time - start_time) * 1000:.2f}ms")
+            
+            return response
+        return decorated
+        
+    # Helper function to get employee by ID with caching
     def get_employee(employee_id):
+        """
+        Get employee data by ID with caching.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            dict: Employee data or default if not found
+        """
+        cache_key = get_cache_key("employee", employee_id)
+        cached_data = get_cache(cache_key)
+        if cached_data:
+            logger.debug(f"Cache hit for employee {employee_id}")
+            return cached_data
+        
+        start_time = time.time()
         emp = employees_collection.find_one({"id": employee_id})
-        return serialize_document(emp) if emp else {"name": "Unknown Employee"}
+        query_time = time.time() - start_time
+        
+        if query_time > 0.1:
+            logger.warning(f"Slow query for employee {employee_id}: {query_time:.2f}s")
+        
+        result = serialize_document(emp) if emp else {"name": "Unknown Employee"}
+        set_cache(cache_key, result)
+        return result
 
-    # Helper function to get department by ID
+    # Helper function to get department by ID with caching
     def get_department(dept_id):
+        """
+        Get department data by ID with caching.
+        
+        Args:
+            dept_id (str): Department ID
+            
+        Returns:
+            dict: Department data or default if not found
+        """
+        cache_key = get_cache_key("department", dept_id)
+        cached_data = get_cache(cache_key)
+        if cached_data:
+            return cached_data
+            
         dept = departments_collection.find_one({"id": dept_id})
-        return serialize_document(dept) if dept else {"name": "Unknown", "color": "bg-gray-500"}
+        result = serialize_document(dept) if dept else {"name": "Unknown", "color": "bg-gray-500"}
+        set_cache(cache_key, result)
+        return result
+
+    # Helper function to enrich employee data with department info
+    def enrich_employee_data(employee):
+        """
+        Enrich employee data with department information.
+        
+        Args:
+            employee (dict): Employee data
+            
+        Returns:
+            dict: Enriched employee data
+        """
+        if "department" in employee:
+            dept = get_department(employee["department"])
+            employee["departmentInfo"] = dept
+            
+        if "manager" in employee:
+            manager = get_employee(employee["manager"])
+            employee["managerInfo"] = manager
+            
+        # Calculate additional metrics
+        employee["yearsOfService"] = calculate_years_of_service(employee)
+        employee["performanceRating"] = calculate_performance_rating(employee)
+        
+        return employee
+        
+    def calculate_years_of_service(employee):
+        """
+        Calculate years of service for an employee.
+        
+        Args:
+            employee (dict): Employee data
+            
+        Returns:
+            float: Years of service
+        """
+        if "joinDate" not in employee:
+            return 0.0
+            
+        try:
+            join_date = datetime.datetime.fromisoformat(employee["joinDate"])
+            today = datetime.datetime.now()
+            delta = relativedelta(today, join_date)
+            return delta.years + (delta.months / 12.0)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid join date format for employee {employee['id']}")
+            return 0.0
+            
+    def calculate_performance_rating(employee):
+        """
+        Calculate performance rating for an employee.
+        
+        Args:
+            employee (dict): Employee data
+            
+        Returns:
+            dict: Performance rating information
+        """
+        # This is just a placeholder for a more complex performance calculation
+        performance = employee.get("performance", 75)
+        
+        rating_levels = [
+            {"min": 90, "label": "Outstanding", "color": "green"},
+            {"min": 80, "label": "Exceeds Expectations", "color": "blue"},
+            {"min": 70, "label": "Meets Expectations", "color": "teal"},
+            {"min": 60, "label": "Needs Improvement", "color": "yellow"},
+            {"min": 0, "label": "Unsatisfactory", "color": "red"}
+        ]
+        
+        for level in rating_levels:
+            if performance >= level["min"]:
+                return {
+                    "score": performance,
+                    "label": level["label"],
+                    "color": level["color"]
+                }
+                
+        return {"score": performance, "label": "Unknown", "color": "gray"}
+        
+    def generate_unique_id(prefix):
+        """
+        Generate a unique ID with the given prefix.
+        
+        Args:
+            prefix (str): ID prefix
+            
+        Returns:
+            str: Generated unique ID
+        """
+        timestamp = datetime.datetime.now().timestamp()
+        random_component = random.randint(1000, 9999)
+        return f"{prefix}-{timestamp}-{random_component}"
+
+    # Function to send email notifications (placeholder)
+    def send_email_notification(recipient, subject, body):
+        """
+        Send an email notification.
+        
+        Args:
+            recipient (str): Recipient email address
+            subject (str): Email subject
+            body (str): Email body
+            
+        Returns:
+            bool: Success status
+        """
+        # This is a placeholder - in a real app, you'd implement actual email sending
+        logger.info(f"Email notification to {recipient}: {subject}")
+        return True
+        
+    # Function to send real-time notifications (placeholder)
+    def send_realtime_notification(user_id, notification_data):
+        """
+        Send a real-time notification.
+        
+        Args:
+            user_id (str): User ID
+            notification_data (dict): Notification data
+            
+        Returns:
+            bool: Success status
+        """
+        # This is a placeholder - in a real app, you'd implement WebSockets or similar
+        logger.info(f"Real-time notification to {user_id}: {notification_data['message']}")
+        return True
+        
+    # Function to calculate task statistics
+    def calculate_task_statistics(department_id=None):
+        """
+        Calculate task statistics, optionally filtered by department.
+        
+        Args:
+            department_id (str, optional): Department ID to filter by
+            
+        Returns:
+            dict: Task statistics
+        """
+        query = {}
+        if department_id:
+            query["department"] = department_id
+            
+        all_tasks = list(tasks_collection.find(query))
+        
+        if not all_tasks:
+            return {
+                "total": 0,
+                "completed": 0,
+                "in_progress": 0,
+                "not_started": 0,
+                "overdue": 0,
+                "completion_rate": 0.0,
+                "average_completion_time": 0.0
+            }
+            
+        # Count tasks by status
+        completed = sum(1 for task in all_tasks if task.get("status") == "completed")
+        in_progress = sum(1 for task in all_tasks if task.get("status") == "in progress")
+        not_started = sum(1 for task in all_tasks if task.get("status") == "not started")
+        
+        # Count overdue tasks
+        today = datetime.datetime.now().date()
+        overdue = sum(1 for task in all_tasks 
+                     if task.get("status") != "completed" 
+                     and "dueDate" in task 
+                     and datetime.datetime.fromisoformat(task["dueDate"]).date() < today)
+        
+        # Calculate average completion time (if data available)
+        completion_times = []
+        for task in all_tasks:
+            if task.get("status") == "completed" and "startDate" in task and "completionDate" in task:
+                try:
+                    start = datetime.datetime.fromisoformat(task["startDate"])
+                    end = datetime.datetime.fromisoformat(task["completionDate"])
+                    completion_times.append((end - start).days)
+                except (ValueError, TypeError):
+                    pass
+        
+        avg_completion_time = statistics.mean(completion_times) if completion_times else 0.0
+        
+        return {
+            "total": len(all_tasks),
+            "completed": completed,
+            "in_progress": in_progress,
+            "not_started": not_started,
+            "overdue": overdue,
+            "completion_rate": (completed / len(all_tasks)) * 100 if all_tasks else 0.0,
+            "average_completion_time": avg_completion_time
+        }
+        
+    # Function to analyze employee performance
+    def analyze_employee_performance(employee_id):
+        """
+        Analyze performance data for an employee.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            dict: Performance analysis data
+        """
+        employee = get_employee(employee_id)
+        tasks = list(tasks_collection.find({"assignedTo": employee_id}))
+        
+        # Task-based metrics
+        total_tasks = len(tasks)
+        completed_tasks = sum(1 for task in tasks if task.get("status") == "completed")
+        completed_on_time = sum(1 for task in tasks 
+                              if task.get("status") == "completed" 
+                              and "dueDate" in task 
+                              and "completionDate" in task
+                              and datetime.datetime.fromisoformat(task["completionDate"]).date() 
+                              <= datetime.datetime.fromisoformat(task["dueDate"]).date())
+                              
+        # Get performance metrics from dedicated collection
+        metrics = list(performance_metrics_collection.find({"employeeId": employee_id}))
+        
+        # Calculate trend
+        if len(metrics) >= 2:
+            metrics.sort(key=lambda x: x.get("date", ""))
+            first_score = metrics[0].get("overallScore", 0)
+            last_score = metrics[-1].get("overallScore", 0)
+            trend = last_score - first_score
+        else:
+            trend = 0
+            
+        return {
+            "employee": employee,
+            "taskMetrics": {
+                "total": total_tasks,
+                "completed": completed_tasks,
+                "completionRate": (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0,
+                "onTimeCompletionRate": (completed_on_time / completed_tasks * 100) if completed_tasks > 0 else 0
+            },
+            "performanceMetrics": {
+                "current": employee.get("performance", 0),
+                "trend": trend,
+                "ratingLabel": calculate_performance_rating(employee)["label"]
+            },
+            "developmentAreas": analyze_development_areas(employee_id)
+        }
+        
+    def analyze_development_areas(employee_id):
+        """
+        Analyze development areas for an employee.
+        
+        Args:
+            employee_id (str): Employee ID
+            
+        Returns:
+            List[dict]: Development areas with recommendations
+        """
+        # This is a placeholder for a more complex analysis
+        employee = get_employee(employee_id)
+        
+        # Get employee skills
+        skills = employee.get("skills", [])
+        
+        # Simple mapping of skills to development recommendations
+        skill_recommendations = {
+            "Campaign Management": {"area": "Strategic Planning", "recommendation": "Advanced campaign strategy workshop"},
+            "Content Strategy": {"area": "Content Development", "recommendation": "Content optimization masterclass"},
+            "SEO": {"area": "Technical SEO", "recommendation": "SEO analytics certification"},
+            "Social Media": {"area": "Platform Specialization", "recommendation": "Platform-specific advanced training"},
+            "Email Marketing": {"area": "Automation", "recommendation": "Marketing automation tools training"},
+            "Analytics": {"area": "Data Visualization", "recommendation": "Advanced data visualization workshop"}
+        }
+        
+        result = []
+        for skill in skills:
+            if skill in skill_recommendations:
+                result.append(skill_recommendations[skill])
+                
+        # Add a generic recommendation if none found
+        if not result:
+            result.append({
+                "area": "Professional Development",
+                "recommendation": "General skills assessment recommended"
+            })
+            
+        return result
+        
+    # Function to schedule with optimal slot selection
+    def find_optimal_meeting_slot(participants, duration=60, start_date=None):
+        """
+        Find the optimal meeting slot for a set of participants.
+        
+        Args:
+            participants (List[str]): List of participant IDs
+            duration (int): Meeting duration in minutes
+            start_date (str, optional): Start date to search from
+            
+        Returns:
+            dict: Optimal meeting slot information
+        """
+        if not start_date:
+            start_date = datetime.datetime.now().date().isoformat()
+            
+        # Get all participants' data
+        participant_data = [get_employee(p_id) for p_id in participants]
+        
+        # Extract available slots
+        all_available_slots = []
+        for participant in participant_data:
+            if "availableSlots" in participant:
+                all_available_slots.append(set(participant["availableSlots"]))
+                
+        # Find common slots
+        if not all_available_slots:
+            # Default slots if none available
+            common_slots = ["09:00", "14:00", "16:00"]
+        else:
+            common_slots = list(set.intersection(*all_available_slots))
+            
+        if not common_slots:
+            # No common slots, find the slot with the most participants available
+            slot_availability = {}
+            for participant in participant_data:
+                for slot in participant.get("availableSlots", []):
+                    slot_availability[slot] = slot_availability.get(slot, 0) + 1
+                    
+            max_available = max(slot_availability.values()) if slot_availability else 0
+            best_slots = [slot for slot, count in slot_availability.items() if count == max_available]
+            
+            common_slots = best_slots if best_slots else ["14:00"]  # Default if no best slot
+            
+        # Get the next viable date
+        return {
+            "date": start_date,
+            "time": random.choice(common_slots),
+            "duration": duration,
+            "participantCount": len(participants),
+            "fullyAvailable": len(common_slots) > 0
+        }
+        
+    # Function to check schedule conflicts
+    def check_schedule_conflicts(employee_id, date, time):
+        """
+        Check for scheduling conflicts for an employee.
+        
+        Args:
+            employee_id (str): Employee ID
+            date (str): Date string
+            time (str): Time string
+            
+        Returns:
+            List[dict]: Conflicts found
+        """
+        # Find meetings on the same date and time
+        meetings = list(meetings_collection.find({
+            "date": date,
+            "participants": employee_id
+        }))
+        
+        conflicts = []
+        for meeting in meetings:
+            meeting_time = meeting.get("time", "")
+            meeting_duration = int(meeting.get("duration", 60))
+            
+            # Simple time comparison - could be more sophisticated
+            if meeting_time == time:
+                conflicts.append({
+                    "meetingId": meeting.get("id"),
+                    "title": meeting.get("title"),
+                    "time": meeting_time,
+                    "duration": meeting_duration
+                })
+                
+        return conflicts
+        
+    # ======================================================================
+    # Database Backup Utilities
+    # ======================================================================
+    
+    def backup_database():
+        """
+        Create a backup of all collections.
+        
+        Returns:
+            dict: Backup summary
+        """
+        backup_time = datetime.datetime.now().isoformat()
+        backup_id = f"backup-{int(time.time())}"
+        
+        collections = [
+            employees_collection,
+            departments_collection,
+            tasks_collection,
+            meetings_collection,
+            notifications_collection,
+            chat_messages_collection
+        ]
+        
+        backup_summary = {
+            "id": backup_id,
+            "timestamp": backup_time,
+            "collections": {}
+        }
+        
+        for collection in collections:
+            collection_name = collection.name
+            documents = list(collection.find({}))
+            document_count = len(documents)
+            
+            # In a real system, you'd save these documents to a backup location
+            backup_summary["collections"][collection_name] = {
+                "count": document_count,
+                "size": sys.getsizeof(str(documents))
+            }
+            
+        logger.info(f"Database backup completed: {backup_id}")
+        return backup_summary
+        
+    def restore_database_from_backup(backup_id):
+        """
+        Restore database from a backup.
+        
+        Args:
+            backup_id (str): Backup ID to restore from
+            
+        Returns:
+            dict: Restore summary
+        """
+        # This is a placeholder - in a real system, you'd implement actual restore logic
+        logger.info(f"Database restore requested for backup: {backup_id}")
+        
+        return {
+            "success": True,
+            "backupId": backup_id,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "message": "Database restore completed successfully"
+        }
+        
+    # ======================================================================
+    # Analytics and Reporting Functions
+    # ======================================================================
+    
+    def generate_department_report(department_id):
+        """
+        Generate a comprehensive report for a department.
+        
+        Args:
+            department_id (str): Department ID
+            
+        Returns:
+            dict: Department report data
+        """
+        department = get_department(department_id)
+        employees = list(employees_collection.find({"department": department_id}))
+        tasks = list(tasks_collection.find({"department": department_id}))
+        
+        # Calculate various metrics
+        task_completion_rate = sum(1 for task in tasks if task.get("status") == "completed") / len(tasks) if tasks else 0
+        avg_performance = statistics.mean([emp.get("performance", 0) for emp in employees]) if employees else 0
+        
+        # Employee statistics
+        employee_stats = {
+            "count": len(employees),
+            "averagePerformance": avg_performance,
+            "seniorityDistribution": calculate_seniority_distribution(employees),
+            "skillsDistribution": calculate_skills_distribution(employees)
+        }
+        
+        # Task statistics
+        task_stats = {
+            "count": len(tasks),
+            "completionRate": task_completion_rate * 100,
+            "priorityDistribution": calculate_task_priority_distribution(tasks),
+            "statusDistribution": calculate_task_status_distribution(tasks)
+        }
+        
+        return {
+            "department": department,
+            "generatedAt": datetime.datetime.now().isoformat(),
+            "employeeStats": employee_stats,
+            "taskStats": task_stats,
+            "recommendations": generate_department_recommendations(department_id)
+        }
+        
+    def calculate_seniority_distribution(employees):
+        """
+        Calculate seniority distribution for employees.
+        
+        Args:
+            employees (List[dict]): List of employee data
+            
+        Returns:
+            dict: Seniority distribution data
+        """
+        # This is a simplified implementation
+        junior = sum(1 for emp in employees if "role" in emp and "junior" in emp["role"].lower())
+        senior = sum(1 for emp in employees if "role" in emp and "senior" in emp["role"].lower())
+        manager = sum(1 for emp in employees if "role" in emp and "manager" in emp["role"].lower())
+        director = sum(1 for emp in employees if "role" in emp and "director" in emp["role"].lower())
+        
+        # Count remaining as "other"
+        other = len(employees) - (junior + senior + manager + director)
+        
+        return {
+            "junior": junior,
+            "senior": senior,
+            "manager": manager,
+            "director": director,
+            "other": other
+        }
+        
+    def calculate_skills_distribution(employees):
+        """
+        Calculate skills distribution for employees.
+        
+        Args:
+            employees (List[dict]): List of employee data
+            
+        Returns:
+            dict: Skills distribution data
+        """
+        skills_count = {}
+        
+        for employee in employees:
+            for skill in employee.get("skills", []):
+                skills_count[skill] = skills_count.get(skill, 0) + 1
+                
+        # Sort by frequency
+        sorted_skills = sorted(skills_count.items(), key=lambda x: x[1], reverse=True)
+        
+        return {skill: count for skill, count in sorted_skills}
+        
+    def calculate_task_priority_distribution(tasks):
+        """
+        Calculate priority distribution for tasks.
+        
+        Args:
+            tasks (List[dict]): List of task data
+            
+        Returns:
+            dict: Priority distribution data
+        """
+        priorities = {"high": 0, "medium": 0, "low": 0}
+        
+        for task in tasks:
+            priority = task.get("priority", "").lower()
+            if priority in priorities:
+                priorities[priority] += 1
+                
+        return priorities
+        
+    def calculate_task_status_distribution(tasks):
+        """
+        Calculate status distribution for tasks.
+        
+        Args:
+            tasks (List[dict]): List of task data
+            
+        Returns:
+            dict: Status distribution data
+        """
+        statuses = {"not started": 0, "in progress": 0, "completed": 0}
+        
+        for task in tasks:
+            status = task.get("status", "").lower()
+            if status in statuses:
+                statuses[status] += 1
+                
+        return statuses
+        
+    def generate_department_recommendations(department_id):
+        """
+        Generate recommendations for a department.
+        
+        Args:
+            department_id (str): Department ID
+            
+        Returns:
+            List[dict]: Recommendations for the department
+        """
+        # This is a placeholder - in a real system, this would be more sophisticated
+        department = get_department(department_id)
+        
+        # Generate some basic recommendations based on department
+        if department["name"] == "Marketing":
+            return [
+                {"type": "training", "title": "Digital Marketing Masterclass", "priority": "high"},
+                {"type": "process", "title": "Implement A/B testing for all campaigns", "priority": "medium"},
+                {"type": "resource", "title": "Hire additional content specialist", "priority": "medium"}
+            ]
+        elif department["name"] == "Technology":
+            return [
+                {"type": "training", "title": "Cloud Architecture Workshop", "priority": "high"},
+                {"type": "process", "title": "Adopt automated testing framework", "priority": "high"},
+                {"type": "resource", "title": "Upgrade development workstations", "priority": "medium"}
+            ]
+        else:
+            return [
+                {"type": "training", "title": "Team collaboration workshop", "priority": "medium"},
+                {"type": "process", "title": "Implement regular feedback sessions", "priority": "medium"},
+                {"type": "resource", "title": "Review resource allocation", "priority": "medium"}
+            ]
+    
+    # ======================================================================
+    # Route Definitions
+    # ======================================================================
 
     # Seed initial data (runs once if collections are empty)
     @app.route("/api/seed", methods=["POST"])
+    @log_api_call
     def seed_data():
-        if departments_collection.count_documents({}) == 0:
-            sample_departments = [
-                {"id": "dept-1", "name": "Marketing", "color": "bg-pink-500", "icon": "Target"},
-                {"id": "dept-2", "name": "Technology", "color": "bg-blue-500", "icon": "Zap"},
-                {"id": "dept-3", "name": "Operations", "color": "bg-amber-500", "icon": "Settings"},
-                {"id": "dept-4", "name": "Finance", "color": "bg-green-500", "icon": "BarChart2"},
-                {"id": "dept-5", "name": "HR", "color": "bg-purple-500", "icon": "Users"},
-                {"id": "dept-6", "name": "Public Relations", "color": "bg-red-500", "icon": "MessageSquare"},
-                {"id": "dept-7", "name": "Customer Support", "color": "bg-cyan-500", "icon": "Phone"},
-                {"id": "dept-8", "name": "Research", "color": "bg-indigo-500", "icon": "Clipboard"},
-            ]
-            departments_collection.insert_many(sample_departments)
-
-        if employees_collection.count_documents({}) == 0:
-            sample_employees = [
-                {"id": "emp-1", "name": "Emma Thompson", "role": "Marketing Director", "department": "dept-1", "email": "emma@company.com", "phone": "+1 (234) 567-8901", "location": "New York", "avatar": "images.jpeg", "status": "active", "skills": ["Campaign Management", "Content Strategy", "SEO"], "performance": 92, "availableSlots": ["10:00", "13:00", "16:00"]},
-                {"id": "emp-2", "name": "Michael Chen", "role": "Marketing Specialist", "department": "dept-1", "email": "michael@company.com", "phone": "+1 (234) 567-8902", "location": "New York", "avatar": "images.jpeg", "status": "active", "skills": ["Social Media", "Email Marketing", "Analytics"], "performance": 88, "availableSlots": ["09:00", "14:00", "15:00"]},
-                # Add more employees as per your sample data...
-            ]
-            employees_collection.insert_many(sample_employees)
-
-        if tasks_collection.count_documents({}) == 0:
-            sample_tasks = [
-                {"id": "task-1", "title": "Q4 Marketing Campaign Planning", "assignedTo": "emp-1", "department": "dept-1", "dueDate": "2025-03-15", "priority": "high", "status": "in progress", "completion": 65},
-                # Add more tasks...
-            ]
-            tasks_collection.insert_many(sample_tasks)
-
-        if meetings_collection.count_documents({}) == 0:
-            sample_meetings = [
-                {"id": "meeting-1", "title": "Marketing Strategy Review", "participants": ["emp-1", "emp-2"], "date": "2025-03-05", "time": "10:00", "duration": 60, "location": "Conference Room A"},
-                # Add more meetings...
-            ]
-            meetings_collection.insert_many(sample_meetings)
-
-        if notifications_collection.count_documents({}) == 0:
-            sample_notifications = [
-                {"id": "notif-1", "type": "task", "message": "Task 'Email Newsletter Campaign' completed", "time": "2 hours ago", "read": False},
-                # Add more notifications...
-            ]
-            notifications_collection.insert_many(sample_notifications)
-
-        return jsonify({"message": "Database seeded successfully"}), 201
-
-    # Departments Endpoints
-    @app.route("/api/departments", methods=["GET"])
-    def get_departments():
-        departments = [serialize_document(dept) for dept in departments_collection.find()]
-        return jsonify(departments), 200
-
-    # Employees Endpoints
-    @app.route("/api/employees", methods=["GET"])
-    def get_employees():
-        active_dept = request.args.get("department", "all")
-        search_query = request.args.get("search", "")
+        """
+        Seed the database with initial data.
+        This is a one-time operation that populates empty collections.
         
-        query = {}
-        if active_dept != "all":
-            query["department"] = active_dept
-        if search_query:
-            query["$or"] = [
-                {"name": {"$regex": search_query, "$options": "i"}},
-                {"role": {"$regex": search_query, "$options": "i"}}
-            ]
+        Returns:
+            tuple: JSON response and status code
+        """
+        logger.info("Database seeding requested")
         
-        employees = [serialize_document(emp) for emp in employees_collection.find(query)]
-        return jsonify(employees), 200
-
-    @app.route("/api/employees", methods=["POST"])
-    def add_employee():
-        data = request.json
-        data["id"] = f"emp-{datetime.datetime.now().timestamp()}"
-        employees_collection.insert_one(data)
-        return jsonify(serialize_document(data)), 201
-
-    # Tasks Endpoints
-    @app.route("/api/tasks", methods=["GET"])
-    def get_tasks():
-        active_dept = request.args.get("department", "all")
-        query = {}
-        if active_dept != "all":
-            query["department"] = active_dept
-        
-        tasks = [serialize_document(task) for task in tasks_collection.find(query)]
-        return jsonify(tasks), 200
-
-    @app.route("/api/tasks", methods=["POST"])
-    def add_task():
-        data = request.json
-        data["id"] = f"task-{datetime.datetime.now().timestamp()}"
-        tasks_collection.insert_one(data)
-        return jsonify(serialize_document(data)), 201
-
-    # Meetings Endpoints
-    @app.route("/api/meetings", methods=["GET"])
-    def get_meetings():
-        meetings = [serialize_document(meeting) for meeting in meetings_collection.find()]
-        return jsonify(meetings), 200
-
-    @app.route("/api/meetings", methods=["POST"])
-    def add_meeting():
-        data = request.json
-        data["id"] = f"meeting-{datetime.datetime.now().timestamp()}"
-        meetings_collection.insert_one(data)
-        
-        # Add notification
-        notification = {
-            "id": f"notif-{datetime.datetime.now().timestamp()}",
-            "type": "meeting",
-            "message": f"New meeting scheduled: {data['title']}",
-            "time": "Just now",
-            "read": False
-        }
-        notifications_collection.insert_one(notification)
-        
-        return jsonify(serialize_document(data)), 201
-
-    # Notifications Endpoints
-    @app.route("/api/notifications", methods=["GET"])
-    def get_notifications():
-        notifications = [serialize_document(notif) for notif in notifications_collection.find()]
-        return jsonify(notifications), 200
-
-    @app.route("/api/notifications/mark-all-read", methods=["POST"])
-    def mark_all_notifications_read():
-        notifications_collection.update_many({"read": False}, {"$set": {"read": True}})
-        return jsonify({"message": "All notifications marked as read"}), 200
-
-    # Chatbot Endpoints
-    @app.route("/api/chat", methods=["POST"])
-    def chat():
-        data = request.json
-        message = data.get("message", "")
-        user_id = data.get("user_id", "manager")  # Default user_id for demo
-        
-        # Save user message
-        user_message = {
-            "id": str(datetime.datetime.now().timestamp()),
-            "type": "user",
-            "text": message,
-            "user_id": user_id,
-            "timestamp": datetime.datetime.utcnow().isoformat()
-        }
-        chat_messages_collection.insert_one(user_message)
-
-        # Check for scheduling request
-        if "schedule" in message.lower() and ("meeting" in message.lower() or "meet" in message.lower()):
-            target_dept = None
-            for dept in departments_collection.find():
-                if dept["name"].lower() in message.lower():
-                    target_dept = serialize_document(dept)
-                    break
-            
-            if target_dept:
-                # Simulate scheduling logic with OpenAI
-                dept_employees = [serialize_document(emp) for emp in employees_collection.find({"department": target_dept["id"]})]
-                available_slots = set.intersection(*[set(emp["availableSlots"]) for emp in dept_employees])
-                suggested_time = random.choice(list(available_slots)) if available_slots else "14:00"
-                
-                bot_response = {
-                    "id": str(datetime.datetime.now().timestamp()),
-                    "type": "bot",
-                    "text": f"Based on availability, I recommend scheduling a meeting with the {target_dept['name']} team tomorrow at {suggested_time}. Shall I proceed?",
-                    "user_id": user_id,
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "scheduling": {
-                        "department": target_dept,
-                        "suggestedTime": suggested_time,
-                        "participants": [emp["id"] for emp in dept_employees]
-                    }
-                }
-            else:
-                bot_response = {
-                    "id": str(datetime.datetime.now().timestamp()),
-                    "type": "bot",
-                    "text": "I'll help you schedule a meeting. Which team would you like to meet with?",
-                    "user_id": user_id,
-                    "timestamp": datetime.datetime.utcnow().isoformat()
-                }
+        # Check if departments already exist
+        if departments_collection.count_documents({}) > 0:
+            logger.info("Departments collection already populated, skipping seed for departments")
         else:
-            # General OpenAI response
-            response = openai_client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are an AI assistant for an employee management system. Help with scheduling, tasks, and team updates."},
-                    {"role": "user", "content": message}
-                ]
-            )
-            bot_response = {
-                "id": str(datetime.datetime.now().timestamp()),
-                "type": "bot",
-                "text": response.choices[0].message.content,
-                "user_id": user_id,
-                "timestamp": datetime.datetime.utcnow().isoformat()
-            }
-        
-        chat_messages_collection.insert_one(bot_response)
-        return jsonify(serialize_document(bot_response)), 200
-
-    @app.route("/api/chat/history", methods=["GET"])
-    def get_chat_history():
-        user_id = request.args.get("user_id", "manager")
-        messages = [serialize_document(msg) for msg in chat_messages_collection.find({"user_id": user_id}).sort("timestamp", 1)]
-        return jsonify(messages), 200
-
-    @app.route("/api/schedule-meeting", methods=["POST"])
-    def schedule_meeting():
-        data = request.json
-        meeting = {
-            "id": f"meeting-{datetime.datetime.now().timestamp()}",
-            "title": f"{data['department']['name']} Team Meeting",
-            "participants": data["participants"],
-            "date": "2025-03-01",  # Tomorrow's date, adjust as needed
-            "time": data["suggestedTime"],
-            "duration": 60,
-            "location": "Conference Room B"
-        }
-        meetings_collection.insert_one(meeting)
-
-        # Add notification
-        notification = {
-            "id": f"notif-{datetime.datetime.now().timestamp()}",
-            "type": "confirmation",
-            "message": f"Meeting with {data['department']['name']} team scheduled for tomorrow at {data['suggestedTime']}",
-            "time": "Just now",
-            "read": False
-        }
-        notifications_collection.insert_one(notification)
-
-        return jsonify(serialize_document(meeting)), 201
+            logger.info("Seeding departments collection")
+            sample_departments = [
+                {"id": "dept-1", "name": "Marketing", "color": "bg-pink-500", "icon": "Target", "description": "Responsible for brand management, advertising, and market research", "headCount": 12, "budget": 750000, "location": "Floor 3, West Wing"},
+                {"id": "dept-2", "name": "Technology", "color": "bg-blue-500", "icon": "Zap", "description": "Handles software development, IT infrastructure, and technical support", "headCount": 24, "budget": 1200000, "location": "Floor 4, North Wing"},
+                {"id": "dept-3", "name": "Operations", "color": "bg-amber-500", "icon": "Settings", "description": "Manages day-to-day business activities and logistics", "headCount": 18, "budget": 900000, "location": "Floor 2, East Wing"},
+                {"id": "dept-4", "name": "Finance", "color": "bg-green-500", "icon": "BarChart2", "description": "Oversees financial planning, accounting, and budget management", "headCount": 10, "budget": 650000,
